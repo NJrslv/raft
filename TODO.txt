@@ -1,0 +1,5 @@
+TODO
+1) When should I call Load() for persistent state?
+Call it everywhere I look for persistent state vars,
+probably that's right
+2) Check for data races, RW/R/W mutexes
