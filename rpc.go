@@ -2,10 +2,12 @@ package raft
 
 import (
 	"context"
+	"fmt"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"log"
 	"raft/proto"
+	"time"
 )
 
 type Peer struct {
@@ -13,29 +15,51 @@ type Peer struct {
 	rpcClient  proto.RaftClient
 }
 
-func NewPeer(id int32) *Peer {
+func NewPeer(id int32) Peer {
 	addr := Cluster[id].Address
 	conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil || id != Cluster[id].ID {
 		log.Fatalf("RPC(FATAL): did not connect or id mismatch: %v", err)
 	}
-	return &Peer{connection: conn, rpcClient: proto.NewRaftClient(conn)}
+	return Peer{connection: conn, rpcClient: proto.NewRaftClient(conn)}
 }
 
-func (p *Peer) AppendEntries(ctx context.Context, in *proto.AppendEntriesRequest) (*proto.AppendEntriesResponse, error) {
-	return p.rpcClient.AppendEntries(ctx, in)
+func (p *Peer) AppendEntries(timeout time.Duration, in *proto.AppendEntriesRequest) (*proto.AppendEntriesResponse, error) {
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	select {
+	case <-timeoutCtx.Done():
+		log.Printf("RPC(WARN): AppendEntries timed out")
+		return nil, fmt.Errorf("AppendEntries timed out")
+	default:
+	}
+
+	return p.rpcClient.AppendEntries(timeoutCtx, in)
 }
 
-func (p *Peer) RequestVote(ctx context.Context, in *proto.RequestVoteRequest) (*proto.RequestVoteResponse, error) {
-	return p.rpcClient.RequestVote(ctx, in)
+func (p *Peer) RequestVote(timeout time.Duration, in *proto.RequestVoteRequest) (*proto.RequestVoteResponse, error) {
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	select {
+	case <-timeoutCtx.Done():
+		log.Printf("RPC(WARN): RequestVote timed out")
+		return nil, fmt.Errorf("RequestVote timed out")
+	default:
+	}
+
+	return p.rpcClient.RequestVote(timeoutCtx, in)
 }
 
-type Peers []*Peer
+type Peers []Peer
 
-func NewPeers() *Peers {
-	peers := make(Peers, len(Cluster))
+func NewPeers(we int32) *Peers {
+	var peers Peers
 	for id := range Cluster {
-		peers[id] = NewPeer(int32(id))
+		if id != int(we) {
+			peers = append(peers, NewPeer(int32(id)))
+		}
 	}
 	return &peers
 }
@@ -63,9 +87,6 @@ func NewRPCserver(bufferCapacity int) *RPCserver {
 		RequestVoteOutCh:   make(chan *proto.RequestVoteResponse, bufferCapacity),
 	}
 }
-
-// in context maybe pass deadlines and timers like
-// ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 
 func (s *RPCserver) AppendEntries(_ context.Context, in *proto.AppendEntriesRequest) (*proto.AppendEntriesResponse, error) {
 	s.AppendEntriesInCh <- in

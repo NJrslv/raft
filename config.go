@@ -13,6 +13,8 @@ func NewConfig(id int32) *ServerConfig {
 
 // config is statically defined
 
+const ClusterSize = 3
+
 var Cluster = []ServerConfig{
 	{ID: 0, Address: "localhost:27000"},
 	{ID: 1, Address: "localhost:27001"},

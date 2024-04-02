@@ -34,12 +34,13 @@ type Server struct {
 	fsm           *StateMachineKV
 
 	config  *ServerConfig
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	rpc     *RPCserver
 	storage *Storage
 	peers   *Peers
 
-	applyNotifyCh chan struct{}
+	applyNotifyCh chan struct{} // used to notify when there are commands available to apply.
+	electNotifyCh chan struct{} // used to notify the start of an election process.
 }
 
 func (s *Server) StartServer() {
@@ -64,7 +65,7 @@ func (s *Server) run() {
 func (s *Server) runFollower() {
 	log.Printf("SERVER#%d: Follower state", s.config.ID)
 
-	electionTimer := GenerateElectionTimer()
+	electionTimer := randElectionTimer()
 	defer electionTimer.Stop()
 
 	for s.state == Follower {
@@ -73,8 +74,9 @@ func (s *Server) runFollower() {
 			log.Printf("Follower#%d election time out", s.config.ID)
 
 			s.state = Candidate
+			s.electNotifyCh <- struct{}{}
 		case <-s.applyNotifyCh:
-			log.Printf("Follower#%d Apply()", s.config.ID)
+			log.Printf("Follower#%d apply()", s.config.ID)
 
 			for i := s.lastApplied + 1; i <= s.commitIndex; i++ {
 				s.fsm.Apply(parseCommandKV(s.log[i].CommandName))
@@ -92,7 +94,7 @@ func (s *Server) runFollower() {
 				if s.log.isLogUpToDateWith(in.LastLogIndex, in.LastLogTerm) {
 					out.VoteGranted = true
 					s.votedFor = in.CandidateId
-					electionTimer = GenerateElectionTimer()
+					electionTimer = randElectionTimer()
 				}
 				s.PersistToStorage()
 			}
@@ -128,7 +130,7 @@ func (s *Server) runFollower() {
 
 			s.currentTerm = in.Term
 			s.votedFor = -1
-			electionTimer = GenerateElectionTimer()
+			electionTimer = randElectionTimer()
 
 			// If an existing entry conflicts with a new one (same index but
 			// different terms), delete the existing entry and all that follow it.
@@ -164,12 +166,73 @@ func (s *Server) runFollower() {
 
 func (s *Server) runCandidate() {
 	log.Printf("SERVER#%d: Candidate state", s.config.ID)
+
+	s.currentTerm++
+	s.votedFor = s.config.ID
+	votesReceived := 1
+
+	electionTimer := randElectionTimer()
+	defer electionTimer.Stop()
+
 	for s.state == Candidate {
 		select {
+		case <-electionTimer.C:
+			log.Printf("Candidate#%d election time out", s.config.ID)
+			// Start new election
+			electionTimer = randElectionTimer()
+			s.electNotifyCh <- struct{}{}
+		case in := <-s.rpc.AppendEntriesInCh:
+			log.Printf("Candidate#%d receive AppendEntries", s.config.ID)
+
+			if in.Term >= s.currentTerm {
+				s.currentTerm = in.Term
+				s.votedFor = -1
+				s.state = Follower
+			}
+			s.PersistToStorage()
+		case <-s.electNotifyCh:
+			log.Printf("Candidate#%d start election", s.config.ID)
+
+			for _, peer := range *s.peers {
+				go func(p Peer) {
+					s.mu.RLock()
+					lastLogIndex, lastLogTerm := s.log.getLastLogIndexTerm()
+					s.mu.RUnlock()
+
+					in := proto.RequestVoteRequest{
+						Term:         s.currentTerm,
+						LastLogIndex: lastLogIndex,
+						LastLogTerm:  lastLogTerm,
+						CandidateId:  s.config.ID,
+					}
+					if out, err := p.RequestVote(randReqVoteTimeout(), &in); err != nil {
+						if out.Term > s.currentTerm {
+							// No need to reset election timeout.
+							// State change triggers runFollower,
+							// which creates a new timer.
+							s.currentTerm = out.Term
+							s.votedFor = -1
+							s.state = Follower
+							return
+						}
+
+						if out.VoteGranted {
+							votesReceived++
+							if s.isMajorityVote(votesReceived) {
+								s.state = Leader
+								return
+							}
+						}
+					}
+				}(peer)
+			}
+			s.PersistToStorage()
 		case <-s.applyNotifyCh:
-			log.Printf("Candidate#%d Apply()", s.config.ID)
+			log.Printf("Candidate#%d apply()", s.config.ID)
+
 			for i := s.lastApplied + 1; i <= s.commitIndex; i++ {
 				s.fsm.Apply(parseCommandKV(s.log[i].CommandName))
+				s.lastApplied++
 			}
 		}
 	}
@@ -177,12 +240,15 @@ func (s *Server) runCandidate() {
 
 func (s *Server) runLeader() {
 	log.Printf("SERVER#%d: Leader state", s.config.ID)
+
 	for s.state == Candidate {
 		select {
 		case <-s.applyNotifyCh:
-			log.Printf("Leader#%d Apply()", s.config.ID)
+			log.Printf("Leader#%d apply()", s.config.ID)
+
 			for i := s.lastApplied + 1; i <= s.commitIndex; i++ {
 				s.fsm.Apply(parseCommandKV(s.log[i].CommandName))
+				s.lastApplied++
 			}
 		}
 	}
@@ -232,8 +298,14 @@ func NewServer(id int32, db *map[string]string) *Server {
 		config:        NewConfig(id),
 		rpc:           NewRPCserver(1),
 		storage:       NewStorage(id),
-		peers:         NewPeers(),
+		peers:         NewPeers(id),
+
+		applyNotifyCh: make(chan struct{}),
+		electNotifyCh: make(chan struct{}),
 	}
+}
+func (s *Server) isMajorityVote(votesReceived int) bool {
+	return 2*votesReceived > len(*s.peers)+1
 }
 
 func (s *Server) PersistToStorage() {
