@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"log"
 	"strings"
 )
@@ -36,7 +37,7 @@ func (fsm *StateMachineKV) Apply(cmd *CommandKV) Response {
 	return response
 }
 
-func parseCommandKV(input string) *CommandKV {
+func stringToCommandKV(input string) *CommandKV {
 	parts := strings.Split(input, "-")
 	if len(parts) != 3 {
 		log.Fatalf("STATEMACHINE(FATAL): Invalid format: %s, expected {GET/SET}-{KEY}-{VALUE/}", input)
@@ -47,6 +48,10 @@ func parseCommandKV(input string) *CommandKV {
 		Key:   parts[1],
 		Value: parts[2],
 	}
+}
+
+func commandKVToString(cmd *CommandKV) string {
+	return fmt.Sprintf("%s-%s-%s", cmd.Op, cmd.Key, cmd.Value)
 }
 
 func opFromString(s string) Op {

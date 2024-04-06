@@ -8,15 +8,15 @@ import (
 )
 
 type KVapi struct {
-	server *raft.Server
-	lock   sync.Mutex
-	db     *map[string]string
+	raftServer *raft.Server
+	lock       sync.Mutex
+	db         *map[string]string
 }
 
 func NewKVapi(server *raft.Server, db *map[string]string) *KVapi {
 	return &KVapi{
-		server: server,
-		db:     db,
+		raftServer: server,
+		db:         db,
 	}
 }
 
@@ -31,9 +31,9 @@ func (kv *KVapi) GetHandler(w http.ResponseWriter, r *http.Request) {
 	kv.lock.Lock()
 	defer kv.lock.Unlock()
 
-	if kv.server.IsLeader() {
+	if kv.raftServer.IsLeader() {
 		command := raft.CommandKV{Op: raft.Set, Key: key, Value: ""}
-		value, ok := kv.server.Submit(command)
+		value, ok := kv.raftServer.Submit(command)
 		if ok {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(value))
@@ -43,7 +43,7 @@ func (kv *KVapi) GetHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("KVAPI(WARN): error getting value for key '%s'", key)
 		}
 	} else {
-		currentLeader := kv.server.GetLeaderAddress()
+		currentLeader := kv.raftServer.GetLeaderAddress()
 		http.Redirect(w, r, "http://"+currentLeader+"/get?key="+key, http.StatusTemporaryRedirect)
 		log.Printf("KVAPI: redirected GET request for key '%s' to leader at %s\n", key, currentLeader)
 	}
@@ -62,9 +62,9 @@ func (kv *KVapi) SetHandler(w http.ResponseWriter, r *http.Request) {
 	kv.lock.Lock()
 	defer kv.lock.Unlock()
 
-	if kv.server.IsLeader() {
+	if kv.raftServer.IsLeader() {
 		command := raft.CommandKV{Op: raft.Set, Key: key, Value: val}
-		_, ok := kv.server.Submit(command)
+		_, ok := kv.raftServer.Submit(command)
 		if ok {
 			w.WriteHeader(http.StatusOK)
 			log.Printf("KVAPI: set value for key '%s' value '%s", key, val)
@@ -73,7 +73,7 @@ func (kv *KVapi) SetHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("KVAPI(WARN): error setting value '%s' for key '%s'", val, key)
 		}
 	} else {
-		currentLeader := kv.server.GetLeaderAddress()
+		currentLeader := kv.raftServer.GetLeaderAddress()
 		http.Redirect(w, r, "http://"+currentLeader+"/get?key="+key, http.StatusTemporaryRedirect)
 		log.Printf("KVAPI: redirected SET request for key '%s' to leader at %s\n", key, currentLeader)
 	}

@@ -11,6 +11,7 @@ import (
 )
 
 type Peer struct {
+	id         int32
 	connection *grpc.ClientConn
 	rpcClient  proto.RaftClient
 }
@@ -21,7 +22,7 @@ func NewPeer(id int32) Peer {
 	if err != nil || id != Cluster[id].ID {
 		log.Fatalf("RPC(FATAL): did not connect or id mismatch: %v", err)
 	}
-	return Peer{connection: conn, rpcClient: proto.NewRaftClient(conn)}
+	return Peer{id: id, connection: conn, rpcClient: proto.NewRaftClient(conn)}
 }
 
 func (p *Peer) AppendEntries(timeout time.Duration, in *proto.AppendEntriesRequest) (*proto.AppendEntriesResponse, error) {

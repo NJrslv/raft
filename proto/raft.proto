@@ -1,42 +1,42 @@
 syntax = "proto3";
 
-option go_package ="proto/";
+option go_package = "proto/";
 
 package raft;
 
 message LogEntry {
-  int32 Index=1;
-  int32 Term=2;
-  string CommandName=3;
+  int32 Index = 1;
+  int32 Term = 2;
+  string CommandName = 3;
 }
 
 message AppendEntriesRequest {
-  int32 Term=1;
-  int32 PrevLogIndex=2;
-  int32 PrevLogTerm=3;
-  int32 CommitIndex=4;
-  int32 LeaderId=5;
-  repeated LogEntry Entries=6;
+  int32 Term = 1;
+  int32 PrevLogIndex = 2;
+  int32 PrevLogTerm = 3;
+  int32 CommitIndex = 4;
+  int32 LeaderId = 5;
+  repeated LogEntry Entries = 6;
 }
 
 message AppendEntriesResponse {
-  int32 Term=1;
-  bool Success=2;
+  int32 Term = 1;
+  bool Success = 2;
   // Faster conflict resolution optimization
   int32 ConflictIndex = 3;
   int32 ConflictTerm = 4;
 }
 
 message RequestVoteRequest {
-  int32 Term=1;
-  int32 LastLogIndex=2;
-  int32 LastLogTerm=3;
-  int32 CandidateId=4;
+  int32 Term = 1;
+  int32 LastLogIndex = 2;
+  int32 LastLogTerm = 3;
+  int32 CandidateId = 4;
 }
 
 message RequestVoteResponse {
-  int32 Term=1;
-  bool VoteGranted=2;
+  int32 Term = 1;
+  bool VoteGranted = 2;
 }
 
 service Raft {

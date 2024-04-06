@@ -22,13 +22,8 @@ func parseID() int32 {
 
 /*
 ./kvapi --id 1
-
-в raft.config есть get address by id, config я пишу в файле
 */
 
-/*
-Заюзать свою библу с логами
-*/
 func main() {
 	database := make(map[string]string)
 
