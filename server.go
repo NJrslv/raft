@@ -56,6 +56,7 @@ func (s *Server) StartServer() {
 	defer s.peers.CloseConn()
 	s.convertToFollower(-1)
 	go s.run()
+	// TODO somehow wait here, create done chan
 }
 
 func (s *Server) run() {
