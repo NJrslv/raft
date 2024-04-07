@@ -41,25 +41,38 @@ type Server struct {
 	peers   *Peers
 
 	// applyNotifyCh is used to notify when there are commands available to apply.
-	applyNotifyCh chan struct{} // for all servers
+	// true if command was replicated
+	applyNotifyCh chan bool // for all servers
 	// electNotifyCh is used to notify the start of an election process.
 	electNotifyCh chan struct{} // for candidate
 	// clientCmdIn is used to send commands from client to leader.
 	clientCmdIn chan CommandKV // for leader
 	// clientCmdOut is used to send command from leader to client.
-	clientCmdOut chan Response // for leader
+	clientCmdOut chan ClientResponse // for leader
 	// appendEntriesNotifyCh is used to notify leader when to send AppendEntries rpc.
 	appendEntriesNotifyCh chan struct{} // for leader
+
+	done chan struct{}
+}
+
+type ClientResponse struct {
+	Msg Response
+	Ok  bool
 }
 
 func (s *Server) StartServer() {
-	defer s.peers.CloseConn()
 	s.convertToFollower(-1)
 	go s.run()
-	// TODO somehow wait here, create done chan
+	<-s.done
+}
+
+func (s *Server) StopServer() {
+	s.peers.CloseConn()
+	s.done <- struct{}{}
 }
 
 func (s *Server) run() {
+	s.PersistToStorage()
 	for {
 		switch s.state {
 		case Follower:
@@ -74,6 +87,7 @@ func (s *Server) run() {
 
 func (s *Server) runFollower() {
 	log.Printf("SERVER#%d: Follower state", s.config.ID)
+	s.LoadFromStorage()
 
 	electionTimer := time.NewTimer(randElectionTimeout())
 	defer electionTimer.Stop()
@@ -160,7 +174,7 @@ func (s *Server) runFollower() {
 			// fsm.apply(command)
 			if in.CommitIndex > s.commitIndex {
 				s.commitIndex = min(in.CommitIndex, s.log.size())
-				s.applyNotifyCh <- struct{}{}
+				s.applyNotifyCh <- false
 			}
 
 			s.PersistToStorage()
@@ -174,6 +188,7 @@ func (s *Server) runFollower() {
 
 func (s *Server) runCandidate() {
 	log.Printf("SERVER#%d: Candidate state", s.config.ID)
+	s.LoadFromStorage()
 
 	s.currentTerm++
 	s.votedFor = s.config.ID
@@ -251,6 +266,7 @@ func (s *Server) runCandidate() {
 
 func (s *Server) runLeader() {
 	log.Printf("SERVER#%d: Leader state", s.config.ID)
+	s.LoadFromStorage()
 
 	heartbeatTimer := time.NewTimer(randHeartbeatTimeout())
 	defer heartbeatTimer.Stop()
@@ -270,11 +286,18 @@ func (s *Server) runLeader() {
 			log.Printf("Leader#%d heartbeat timeout", s.config.ID)
 			heartbeatTimer.Reset(randHeartbeatTimeout())
 			s.sendAppendEntries(true, CommandKV{}, currentTerm, commitIndex)
-		case <-s.applyNotifyCh:
+		case isReplicated := <-s.applyNotifyCh:
 			log.Printf("Leader#%d apply()", s.config.ID)
-			applyResults := s.applyCommitted()
-			for _, applyResult := range applyResults {
-				s.clientCmdOut <- applyResult
+			if isReplicated {
+				applyResults := s.applyCommitted()
+				for _, applyResult := range applyResults {
+					s.clientCmdOut <- ClientResponse{
+						Msg: applyResult,
+						Ok:  true,
+					}
+				}
+			} else {
+				s.clientCmdOut <- ClientResponse{Msg: "", Ok: false}
 			}
 		case in := <-s.rpc.RequestVoteInCh:
 			log.Printf("Leader#%d received RequestVote", s.config.ID)
@@ -305,15 +328,13 @@ func (s *Server) runLeader() {
 type Response string
 
 // Submit attempts to execute a command and replicate it.
-func (s *Server) Submit(command CommandKV) (Response, bool) {
-	// TODO TODO.txt(6):  create command Id, in order to apply it once
-	// TODO TODO.txt(11): we enter in this func <=> we are in the leader state => reconsider 'ok' value
+func (s *Server) Submit(command CommandKV) ClientResponse {
 	log.Printf("SERVER: Submit received by %v", s.config.ID)
 	if s.state == Leader {
 		s.clientCmdIn <- command
-		return <-s.clientCmdOut, true
+		return <-s.clientCmdOut
 	}
-	return "", false
+	return ClientResponse{Msg: "", Ok: false}
 }
 
 func NewServer(id int32, db *map[string]string) *Server {
@@ -334,10 +355,12 @@ func NewServer(id int32, db *map[string]string) *Server {
 		storage: NewStorage(id),
 		peers:   NewPeers(id),
 
-		applyNotifyCh: make(chan struct{}),
-		electNotifyCh: make(chan struct{}),
-		clientCmdIn:   make(chan CommandKV),
-		clientCmdOut:  make(chan Response),
+		applyNotifyCh:         make(chan bool),
+		electNotifyCh:         make(chan struct{}),
+		clientCmdIn:           make(chan CommandKV),
+		clientCmdOut:          make(chan ClientResponse),
+		appendEntriesNotifyCh: make(chan struct{}),
+		done:                  make(chan struct{}),
 	}
 }
 
@@ -352,7 +375,7 @@ func (s *Server) convertToFollower(newTerm int32) {
 }
 
 func (s *Server) applyCommitted() []Response {
-	var responses []Response // TODO or we can allocate [] of size commitIndex - lastApplied
+	var responses []Response // we can allocate [] of size commitIndex - lastApplied
 	for i := s.lastApplied + 1; i <= s.commitIndex; i++ {
 		responses = append(responses, s.fsm.Apply(stringToCommandKV(s.log[i].CommandName)))
 		s.lastApplied++
@@ -425,6 +448,7 @@ func (s *Server) sendAppendEntry(isHeartBeat bool, p Peer, currentTerm int32, co
 	}
 	s.mu.RUnlock()
 
+	isReplicated := false
 	if out, err := p.AppendEntries(randAppendEntriesTimeout(), &in); err != nil {
 		// TODO lock
 		if out.Term > currentTerm {
@@ -457,7 +481,7 @@ func (s *Server) sendAppendEntry(isHeartBeat bool, p Peer, currentTerm int32, co
 				}
 
 				if s.commitIndex != commitIndex {
-					s.applyNotifyCh <- struct{}{}
+					isReplicated = true
 				}
 			} else {
 				s.nextIndex[p.id] = out.ConflictIndex
@@ -480,6 +504,7 @@ func (s *Server) sendAppendEntry(isHeartBeat bool, p Peer, currentTerm int32, co
 			}
 		}
 	}
+	s.applyNotifyCh <- isReplicated
 	return false
 }
 
@@ -488,7 +513,21 @@ func (s *Server) isMajorityCount(count int) bool {
 }
 
 func (s *Server) PersistToStorage() {
-	s.storage.Save(NewPersistentState(s.currentTerm, s.votedFor, &s.log))
+	err := s.storage.Save(NewPersistentState(s.currentTerm, s.votedFor, s.log))
+	if err != nil {
+		log.Printf("SERVER(WARN): Failed to persist state to storage: %v", err)
+	}
+}
+
+func (s *Server) LoadFromStorage() {
+	state, err := s.storage.Load()
+	if err != nil {
+		log.Printf("SERVER(WARN): Failed to load persistant state from storage: %v", err)
+	} else {
+		s.currentTerm = state.CurrentTerm
+		s.votedFor = state.VotedFor
+		s.log = state.Log
+	}
 }
 
 func (s *Server) IsLeader() bool {

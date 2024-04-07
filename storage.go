@@ -10,10 +10,10 @@ import (
 type PersistentState struct {
 	CurrentTerm int32 `json:"currentTerm"`
 	VotedFor    int32 `json:"votedFor"`
-	Log         *Log  `json:"log"`
+	Log         Log   `json:"log"`
 }
 
-func NewPersistentState(term int32, votedFor int32, log *Log) *PersistentState {
+func NewPersistentState(term int32, votedFor int32, log Log) *PersistentState {
 	return &PersistentState{
 		CurrentTerm: term,
 		VotedFor:    votedFor,
@@ -59,20 +59,20 @@ func (s *Storage) Save(state *PersistentState) error {
 	return nil
 }
 
-func (s *Storage) Load() (*PersistentState, error) {
+func (s *Storage) Load() (PersistentState, error) {
 	data, err := os.ReadFile(s.filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &PersistentState{}, nil
+			return PersistentState{}, nil
 		}
-		return nil, err
+		return PersistentState{}, err
 	}
 
 	var state PersistentState
 	err = json.Unmarshal(data, &state)
 	if err != nil {
-		return nil, err
+		return PersistentState{}, err
 	}
 
-	return &state, nil
+	return state, nil
 }

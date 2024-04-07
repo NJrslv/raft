@@ -4,8 +4,11 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"raft"
 	"raft/kv"
+	"syscall"
 )
 
 func parseID() int32 {
@@ -29,8 +32,6 @@ func main() {
 
 	id := parseID()
 	server := raft.NewServer(id, &database)
-	server.StartServer()
-
 	kvApi := kv.NewKVapi(server, &database)
 
 	http.HandleFunc("/set", kvApi.SetHandler)
@@ -41,8 +42,17 @@ func main() {
 		log.Fatal("MAIN(FATAL): incorrect server id")
 	}
 
-	err := http.ListenAndServe(":"+raft.GetPort(kvAddress), nil)
-	if err != nil {
-		log.Fatal("MAIN(FATAL): " + err.Error())
-	}
+	go func() {
+		err := http.ListenAndServe(":"+raft.GetPort(kvAddress), nil)
+		if err != nil {
+			log.Fatal("MAIN(FATAL): " + err.Error())
+		}
+	}()
+
+	done := make(chan os.Signal)
+	signal.Notify(done, os.Interrupt, syscall.SIGTERM, syscall.SIGKILL)
+
+	go server.StartServer()
+	defer server.StopServer()
+	<-done
 }

@@ -33,10 +33,10 @@ func (kv *KVapi) GetHandler(w http.ResponseWriter, r *http.Request) {
 
 	if kv.raftServer.IsLeader() {
 		command := raft.CommandKV{Op: raft.Set, Key: key, Value: ""}
-		value, ok := kv.raftServer.Submit(command)
-		if ok {
+		response := kv.raftServer.Submit(command)
+		if response.Ok {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(value))
+			w.Write([]byte(response.Msg))
 			log.Printf("KVAPI: got value for key '%s'", key)
 		} else {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -57,15 +57,14 @@ func (kv *KVapi) SetHandler(w http.ResponseWriter, r *http.Request) {
 		log.Fatal("KVAPI(FATAL): missing key or val param in SET request")
 	}
 
-	// if we have multiple clients
-	// это может убрать я про lock у kv
+	// TODO: reconsider - if we have multiple clients
 	kv.lock.Lock()
 	defer kv.lock.Unlock()
 
 	if kv.raftServer.IsLeader() {
 		command := raft.CommandKV{Op: raft.Set, Key: key, Value: val}
-		_, ok := kv.raftServer.Submit(command)
-		if ok {
+		response := kv.raftServer.Submit(command)
+		if response.Ok {
 			w.WriteHeader(http.StatusOK)
 			log.Printf("KVAPI: set value for key '%s' value '%s", key, val)
 		} else {
