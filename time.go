@@ -12,35 +12,26 @@ const (
 	DefaultAppendEntriesTimeout = DefaultHeartbeatTimeout / (ClusterSize - 1)
 
 	// Delta timeouts are used to randomize the timeout
-	// within a range [defaultTimeout - delta, defaultTimeout + delta]
+	// within a range [defaultTimeout, defaultTimeout + delta]
 
-	DeltaHeartbeatTimeout     = 5 * time.Millisecond
-	DeltaElectionTimeout      = 20 * time.Millisecond
-	DeltaRequestVoteTimeout   = DeltaElectionTimeout / (ClusterSize - 1)
-	DeltaAppendEntriesTimeout = DeltaHeartbeatTimeout / (ClusterSize - 1)
-
-	MinHeartbeatInterval    = DefaultHeartbeatTimeout - DeltaHeartbeatTimeout
-	MinElectionTimeout      = DefaultElectionTimeout - DeltaElectionTimeout
-	MinRequestVoteTimeout   = DefaultRequestVoteTimeout - DeltaRequestVoteTimeout
-	MinAppendEntriesTimeout = DefaultAppendEntriesTimeout - DeltaAppendEntriesTimeout
+	DeltaHeartbeatTick     = 10
+	DeltaElectionTick      = 150
+	DeltaRequestVoteTick   = 20
+	DeltaAppendEntriesTick = 20
 )
 
 func randHeartbeatTimeout() time.Duration {
-	timeoutOffset := rand.Intn(int(2 * DeltaHeartbeatTimeout))
-	return MinHeartbeatInterval + time.Duration(timeoutOffset)
+	return DefaultHeartbeatTimeout + time.Duration(rand.Intn(DeltaHeartbeatTick))*time.Millisecond
 }
 
 func randElectionTimeout() time.Duration {
-	timeoutOffset := rand.Intn(int(2 * DeltaElectionTimeout))
-	return MinElectionTimeout + time.Duration(timeoutOffset)
+	return DefaultElectionTimeout + time.Duration(rand.Intn(DeltaElectionTick))*time.Millisecond
 }
 
 func randReqVoteTimeout() time.Duration {
-	timeoutOffset := rand.Intn(int(2 * DeltaRequestVoteTimeout))
-	return MinRequestVoteTimeout + time.Duration(timeoutOffset)
+	return DefaultRequestVoteTimeout + time.Duration(rand.Intn(DeltaRequestVoteTick))*time.Millisecond
 }
 
 func randAppendEntriesTimeout() time.Duration {
-	timeoutOffset := rand.Intn(int(2 * DeltaAppendEntriesTimeout))
-	return MinAppendEntriesTimeout + time.Duration(timeoutOffset)
+	return DefaultAppendEntriesTimeout + time.Duration(rand.Intn(DeltaAppendEntriesTick))*time.Millisecond
 }

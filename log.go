@@ -6,10 +6,6 @@ import (
 
 type Log []*proto.LogEntry
 
-func NewLog() Log {
-	return Log{}
-}
-
 func (l *Log) isPrevLogTermTheSame(prevLogIndex int32, prevLogTerm int32) bool {
 	return prevLogIndex == -1 || prevLogIndex < l.size() && (*l)[prevLogIndex].Term == prevLogTerm
 }

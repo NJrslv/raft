@@ -3,7 +3,7 @@ package raft
 import "strings"
 
 type ServerConfig struct {
-	ID      int32
+	Id      int32
 	Address string
 }
 
@@ -11,14 +11,12 @@ func NewConfig(id int32) *ServerConfig {
 	return &Cluster[id]
 }
 
-// config is statically defined
-
 const ClusterSize = 3
 
 var Cluster = []ServerConfig{
-	{ID: 0, Address: "localhost:27000"},
-	{ID: 1, Address: "localhost:27001"},
-	{ID: 2, Address: "localhost:10002"},
+	{Id: 0, Address: "localhost:27000"},
+	{Id: 1, Address: "localhost:27001"},
+	{Id: 2, Address: "localhost:10002"},
 }
 
 func FindServerAddressByID(id int32) (string, bool) {

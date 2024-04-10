@@ -1,6 +1,7 @@
 package kv
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"raft"
@@ -21,15 +22,14 @@ func NewKVapi(server *raft.Server, db *map[string]string) *KVapi {
 }
 
 func (kv *KVapi) GetHandler(w http.ResponseWriter, r *http.Request) {
+	kv.lock.Lock()
+	defer kv.lock.Unlock()
+
 	key := r.URL.Query().Get("key")
 	if key == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		log.Fatal("KVAPI(FATAL): missing key param in GET request")
 	}
-
-	// if we have multiple clients
-	kv.lock.Lock()
-	defer kv.lock.Unlock()
 
 	if kv.raftServer.IsLeader() {
 		command := raft.CommandKV{Op: raft.Set, Key: key, Value: ""}
@@ -50,16 +50,15 @@ func (kv *KVapi) GetHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (kv *KVapi) SetHandler(w http.ResponseWriter, r *http.Request) {
+	kv.lock.Lock()
+	defer kv.lock.Unlock()
+
 	key := r.URL.Query().Get("key")
 	val := r.URL.Query().Get("val")
 	if key == "" || val == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		log.Fatal("KVAPI(FATAL): missing key or val param in SET request")
 	}
-
-	// TODO: reconsider - if we have multiple clients
-	kv.lock.Lock()
-	defer kv.lock.Unlock()
 
 	if kv.raftServer.IsLeader() {
 		command := raft.CommandKV{Op: raft.Set, Key: key, Value: val}
@@ -75,5 +74,12 @@ func (kv *KVapi) SetHandler(w http.ResponseWriter, r *http.Request) {
 		currentLeader := kv.raftServer.GetLeaderAddress()
 		http.Redirect(w, r, "http://"+currentLeader+"/get?key="+key, http.StatusTemporaryRedirect)
 		log.Printf("KVAPI: redirected SET request for key '%s' to leader at %s\n", key, currentLeader)
+	}
+}
+
+func (kv *KVapi) PrintRunInstruction() {
+	fmt.Print("Run all processes listed in the configuration file:\n")
+	for _, serverConfig := range raft.Cluster {
+		fmt.Printf("$ ./kv --id %d\n", serverConfig.Id)
 	}
 }

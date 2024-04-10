@@ -6,6 +6,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"log"
+	"net"
 	"raft/proto"
 	"time"
 )
@@ -16,13 +17,21 @@ type Peer struct {
 	rpcClient  proto.RaftClient
 }
 
-func NewPeer(id int32) Peer {
-	addr := Cluster[id].Address
-	conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil || id != Cluster[id].ID {
-		log.Fatalf("RPC(FATAL): did not connect or id mismatch: %v", err)
+func (p *Peer) GetId() int32 {
+	return p.id
+}
+
+func NewPeer(id int32) *Peer {
+	return &Peer{id: id, connection: nil, rpcClient: nil}
+}
+
+func (p *Peer) dial() {
+	conn, err := grpc.Dial(Cluster[p.id].Address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Fatalf("RPC(FATAL): did not connect: %v", err)
 	}
-	return Peer{id: id, connection: conn, rpcClient: proto.NewRaftClient(conn)}
+	p.connection = conn
+	p.rpcClient = proto.NewRaftClient(conn)
 }
 
 func (p *Peer) AppendEntries(timeout time.Duration, in *proto.AppendEntriesRequest) (*proto.AppendEntriesResponse, error) {
@@ -43,17 +52,17 @@ func (p *Peer) RequestVote(timeout time.Duration, in *proto.RequestVoteRequest) 
 	timeoutCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	select {
-	case <-timeoutCtx.Done():
-		log.Printf("RPC(WARN): RequestVote timed out")
-		return nil, fmt.Errorf("RequestVote timed out")
-	default:
-	}
+	//select {
+	//case <-timeoutCtx.Done():
+	//	log.Printf("RPC(WARN): RequestVote timed out")
+	//	return nil, fmt.Errorf("RequestVote timed out")
+	//default:
+	//}
 
 	return p.rpcClient.RequestVote(timeoutCtx, in)
 }
 
-type Peers []Peer
+type Peers []*Peer
 
 func NewPeers(we int32) *Peers {
 	var peers Peers
@@ -63,6 +72,12 @@ func NewPeers(we int32) *Peers {
 		}
 	}
 	return &peers
+}
+
+func (ps *Peers) DialPeers() {
+	for _, p := range *ps {
+		p.dial()
+	}
 }
 
 func (ps *Peers) CloseConn() {
@@ -76,8 +91,29 @@ type RPCserver struct {
 	AppendEntriesOutCh chan *proto.AppendEntriesResponse
 	RequestVoteInCh    chan *proto.RequestVoteRequest
 	RequestVoteOutCh   chan *proto.RequestVoteResponse
+	server             *grpc.Server
 
 	proto.UnimplementedRaftServer
+}
+
+func (s *RPCserver) start(addr string) {
+	log.Printf("RPC: Start RPC server")
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("RPC(FATAL): failed to listen: %v", err)
+	}
+	defer l.Close()
+
+	s.server = grpc.NewServer()
+	proto.RegisterRaftServer(s.server, s)
+
+	if err := s.server.Serve(l); err != nil {
+		log.Fatalf("RPC(FATAL): Failed to serve: %s", err.Error())
+	}
+}
+
+func (s *RPCserver) stop() {
+	s.server.GracefulStop()
 }
 
 func NewRPCserver(bufferCapacity int) *RPCserver {

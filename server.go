@@ -38,7 +38,7 @@ type Server struct {
 	mu      sync.RWMutex
 	rpc     *RPCserver
 	storage *Storage
-	peers   *Peers
+	Peers   *Peers
 
 	// applyNotifyCh is used to notify when there are commands available to apply.
 	// true if command was replicated
@@ -52,7 +52,8 @@ type Server struct {
 	// appendEntriesNotifyCh is used to notify leader when to send AppendEntries rpc.
 	appendEntriesNotifyCh chan struct{} // for leader
 
-	done chan struct{}
+	done       chan struct{}
+	stopServer chan struct{}
 }
 
 type ClientResponse struct {
@@ -60,20 +61,32 @@ type ClientResponse struct {
 	Ok  bool
 }
 
-func (s *Server) StartServer() {
+func (s *Server) Start() {
+	logInfo("Starting server")
 	s.convertToFollower(-1)
+	go s.rpc.start(s.GetAddress())
+	s.Peers.DialPeers()
 	go s.run()
-	<-s.done
 }
 
-func (s *Server) StopServer() {
-	s.peers.CloseConn()
+func (s *Server) Stop() {
+	logInfo("Stopping server")
+	s.rpc.stop()
+	s.Peers.CloseConn()
 	s.done <- struct{}{}
 }
 
 func (s *Server) run() {
 	s.PersistToStorage()
 	for {
+		select {
+		case <-s.done:
+			s.stopServer <- struct{}{}
+			logInfo("Stopping process")
+			return
+		default:
+		}
+
 		switch s.state {
 		case Follower:
 			s.runFollower()
@@ -86,8 +99,8 @@ func (s *Server) run() {
 }
 
 func (s *Server) runFollower() {
-	log.Printf("SERVER#%d: Follower state", s.config.ID)
 	s.LoadFromStorage()
+	logRaft(Follower, StateChanged, s.config.Id, s.currentTerm)
 
 	electionTimer := time.NewTimer(randElectionTimeout())
 	defer electionTimer.Stop()
@@ -95,15 +108,15 @@ func (s *Server) runFollower() {
 	for s.state == Follower {
 		select {
 		case <-electionTimer.C:
-			log.Printf("Follower#%d election time out", s.config.ID)
+			logRaft(Follower, ElectionTimeout, s.config.Id, s.currentTerm)
 			s.state = Candidate
 			s.electNotifyCh <- struct{}{}
 		case <-s.applyNotifyCh:
-			log.Printf("Follower#%d apply()", s.config.ID)
+			logRaft(Follower, Apply, s.config.Id, s.currentTerm)
 			s.applyCommitted()
 		case in := <-s.rpc.RequestVoteInCh:
-			log.Printf("Follower#%d receive RequestVote", s.config.ID)
-			out := proto.RequestVoteResponse{Term: s.currentTerm, VoteGranted: false}
+			logRaft(Follower, ReceiveRequestVote, s.config.Id, s.currentTerm)
+			out := proto.RequestVoteResponse{VoteGranted: false}
 			// Reply false if term < currentTerm AND
 			// If votedFor is null or candidateId, and candidate’s log
 			// is at least as up-to-date as receiver’s log, grant vote.
@@ -116,9 +129,10 @@ func (s *Server) runFollower() {
 				}
 				s.PersistToStorage()
 			}
+			out.Term = s.currentTerm
 			s.rpc.RequestVoteOutCh <- &out
 		case in := <-s.rpc.AppendEntriesInCh:
-			log.Printf("Follower#%d receive AppendEntries", s.config.ID)
+			logRaft(Follower, ReceiveAppendEntries, s.config.Id, s.currentTerm)
 			var out proto.AppendEntriesResponse
 			// Reply false if term < currentTerm.
 			if in.Term < s.currentTerm {
@@ -174,7 +188,7 @@ func (s *Server) runFollower() {
 			// fsm.apply(command)
 			if in.CommitIndex > s.commitIndex {
 				s.commitIndex = min(in.CommitIndex, s.log.size())
-				s.applyNotifyCh <- false
+				s.applyNotifyCh <- false // false ~ cmd is not replicated (we don't know)
 			}
 
 			s.PersistToStorage()
@@ -182,16 +196,22 @@ func (s *Server) runFollower() {
 			out.Term = s.currentTerm
 			out.Success = true
 			s.rpc.AppendEntriesOutCh <- &out
+		case <-s.stopServer:
+			return
 		}
 	}
 }
 
+func debug(line int) {
+	log.Printf("\n----------- HERE ----------- %d\n", line)
+}
+
 func (s *Server) runCandidate() {
-	log.Printf("SERVER#%d: Candidate state", s.config.ID)
 	s.LoadFromStorage()
+	logRaft(Candidate, StateChanged, s.config.Id, s.currentTerm)
 
 	s.currentTerm++
-	s.votedFor = s.config.ID
+	s.votedFor = s.config.Id
 	votesReceived := 1
 
 	electionTimer := time.NewTimer(randElectionTimeout())
@@ -200,12 +220,12 @@ func (s *Server) runCandidate() {
 	for s.state == Candidate {
 		select {
 		case <-electionTimer.C:
-			log.Printf("Candidate#%d election time out", s.config.ID)
+			logRaft(Candidate, ElectionTimeout, s.config.Id, s.currentTerm)
 			// Start new election
 			electionTimer.Reset(randElectionTimeout())
 			s.electNotifyCh <- struct{}{}
 		case in := <-s.rpc.AppendEntriesInCh:
-			log.Printf("Candidate#%d receive AppendEntries", s.config.ID)
+			logRaft(Candidate, ReceiveAppendEntries, s.config.Id, s.currentTerm)
 			if in.Term >= s.currentTerm {
 				s.convertToFollower(in.Term)
 				// push to the follower
@@ -214,8 +234,8 @@ func (s *Server) runCandidate() {
 				s.rpc.AppendEntriesOutCh <- s.rejectAppendEntriesMsg()
 			}
 		case in := <-s.rpc.RequestVoteInCh:
-			log.Printf("Candidate#%d receive RequestVote", s.config.ID)
-			if in.Term > s.currentTerm {
+			logRaft(Candidate, ReceiveRequestVote, s.config.Id, s.currentTerm)
+			if in.Term >= s.currentTerm {
 				s.convertToFollower(in.Term)
 				// push to the follower
 				s.rpc.RequestVoteInCh <- in
@@ -223,24 +243,30 @@ func (s *Server) runCandidate() {
 				s.rpc.RequestVoteOutCh <- s.rejectRequestVoteMsg()
 			}
 		case <-s.electNotifyCh:
-			log.Printf("Candidate#%d start election", s.config.ID)
+			logRaft(Candidate, ElectionStart, s.config.Id, s.currentTerm)
+			logRaft(Candidate, SendRequestVote, s.config.Id, s.currentTerm)
 			var wg sync.WaitGroup
-			for _, peer := range *s.peers {
+			for _, peer := range *s.Peers {
 				wg.Add(1)
 				go func(p Peer) {
 					defer wg.Done()
 					s.mu.RLock()
 					lastLogIndex, lastLogTerm := s.log.getLastLogIndexTerm()
+					currentTerm := s.currentTerm
 					s.mu.RUnlock()
 
 					in := proto.RequestVoteRequest{
-						Term:         s.currentTerm,
+						Term:         currentTerm,
 						LastLogIndex: lastLogIndex,
 						LastLogTerm:  lastLogTerm,
-						CandidateId:  s.config.ID,
+						CandidateId:  s.config.Id,
 					}
-					if out, err := p.RequestVote(randReqVoteTimeout(), &in); err != nil {
-						if out.Term > s.currentTerm {
+
+					if out, err := p.RequestVote(randReqVoteTimeout(), &in); err == nil {
+						s.mu.Lock()
+						defer s.mu.Unlock()
+
+						if out.Term > currentTerm {
 							s.convertToFollower(out.Term)
 							return
 						}
@@ -248,70 +274,72 @@ func (s *Server) runCandidate() {
 						if out.VoteGranted {
 							votesReceived++
 							if s.isMajorityCount(votesReceived) {
+								logRaft(Candidate, ElectionWin, s.config.Id, s.currentTerm)
 								s.state = Leader
 								return
 							}
 						}
 					}
-				}(peer)
+				}(*peer)
 			}
 			wg.Wait()
+			logRaft(Candidate, ElectionStop, s.config.Id, s.currentTerm)
 			s.PersistToStorage()
 		case <-s.applyNotifyCh:
-			log.Printf("Candidate#%d apply()", s.config.ID)
+			logRaft(Candidate, Apply, s.config.Id, s.currentTerm)
 			s.applyCommitted()
+		case <-s.stopServer:
+			return
 		}
 	}
 }
 
 func (s *Server) runLeader() {
-	log.Printf("SERVER#%d: Leader state", s.config.ID)
 	s.LoadFromStorage()
+	logRaft(Leader, StateChanged, s.config.Id, s.currentTerm)
 
 	heartbeatTimer := time.NewTimer(randHeartbeatTimeout())
 	defer heartbeatTimer.Stop()
 
-	s.mu.RLock()
-	currentTerm := s.currentTerm
-	commitIndex := s.commitIndex
-	s.mu.RUnlock()
-
 	for s.state == Leader {
 		select {
 		case cmd := <-s.clientCmdIn:
-			log.Printf("Leader#%d received cmd from client", s.config.ID)
+			logRaft(Leader, ReceiveClientCmd, s.config.Id, s.currentTerm)
 			heartbeatTimer.Reset(randHeartbeatTimeout())
-			s.sendAppendEntries(false, cmd, currentTerm, commitIndex)
+			s.sendAppendEntries(false, cmd, s.currentTerm, s.commitIndex)
 		case <-heartbeatTimer.C:
-			log.Printf("Leader#%d heartbeat timeout", s.config.ID)
+			logRaft(Leader, HeartbeatTimeout, s.config.Id, s.currentTerm)
 			heartbeatTimer.Reset(randHeartbeatTimeout())
-			s.sendAppendEntries(true, CommandKV{}, currentTerm, commitIndex)
+			s.sendAppendEntries(true, CommandKV{}, s.currentTerm, s.commitIndex)
 		case isReplicated := <-s.applyNotifyCh:
-			log.Printf("Leader#%d apply()", s.config.ID)
+			logRaft(Leader, Apply, s.config.Id, s.currentTerm)
 			if isReplicated {
 				applyResults := s.applyCommitted()
 				for _, applyResult := range applyResults {
+					logInfo("Successfully responded to client")
 					s.clientCmdOut <- ClientResponse{
 						Msg: applyResult,
 						Ok:  true,
 					}
 				}
 			} else {
+				logInfo("Failed to respond to client")
 				s.clientCmdOut <- ClientResponse{Msg: "", Ok: false}
 			}
 		case in := <-s.rpc.RequestVoteInCh:
-			log.Printf("Leader#%d received RequestVote", s.config.ID)
+			logRaft(Leader, ReceiveRequestVote, s.config.Id, s.currentTerm)
 			if in.Term > s.currentTerm {
 				s.convertToFollower(in.Term)
 				// push to the follower
 				s.rpc.RequestVoteInCh <- in
 			} else {
+				logRaft(Leader, RejectRequestVote, s.config.Id, s.currentTerm)
 				s.rpc.RequestVoteOutCh <- s.rejectRequestVoteMsg()
 			}
 		case in := <-s.rpc.AppendEntriesInCh:
-			log.Printf("Leader#%d received AppendEntries", s.config.ID)
+			logRaft(Leader, ReceiveAppendEntries, s.config.Id, s.currentTerm)
 			if in.Term == s.currentTerm {
-				log.Fatal("SERVER(FATAL): 2 leaders in the same term")
+				logError("2 leaders in the same term")
 			}
 
 			if in.Term > s.currentTerm {
@@ -319,8 +347,11 @@ func (s *Server) runLeader() {
 				// push to the follower
 				s.rpc.AppendEntriesInCh <- in
 			} else {
+				logRaft(Leader, RejectAppendEntries, s.config.Id, s.currentTerm)
 				s.rpc.AppendEntriesOutCh <- s.rejectAppendEntriesMsg()
 			}
+		case <-s.stopServer:
+			return
 		}
 	}
 }
@@ -329,7 +360,7 @@ type Response string
 
 // Submit attempts to execute a command and replicate it.
 func (s *Server) Submit(command CommandKV) ClientResponse {
-	log.Printf("SERVER: Submit received by %v", s.config.ID)
+	log.Printf("SERVER: Submit received by %v", s.config.Id)
 	if s.state == Leader {
 		s.clientCmdIn <- command
 		return <-s.clientCmdOut
@@ -341,32 +372,32 @@ func NewServer(id int32, db *map[string]string) *Server {
 	return &Server{
 		currentTerm: -1,
 		votedFor:    -1,
-		log:         NewLog(),
+		log:         Log{},
 
-		commitIndex:   -1,
-		lastApplied:   -1,
-		nextIndex:     make([]int32, len(Cluster)),
-		matchIndex:    make([]int32, len(Cluster)),
+		commitIndex: -1,
+		lastApplied: -1,
+
+		nextIndex:  make([]int32, len(Cluster)),
+		matchIndex: make([]int32, len(Cluster)),
+
 		currentLeader: -1,
+		state:         Follower,
+		fsm:           NewStateMachineKV(db),
 
-		fsm:     NewStateMachineKV(db),
 		config:  NewConfig(id),
 		rpc:     NewRPCserver(1),
 		storage: NewStorage(id),
-		peers:   NewPeers(id),
+		Peers:   NewPeers(id),
 
-		applyNotifyCh:         make(chan bool),
-		electNotifyCh:         make(chan struct{}),
-		clientCmdIn:           make(chan CommandKV),
-		clientCmdOut:          make(chan ClientResponse),
-		appendEntriesNotifyCh: make(chan struct{}),
-		done:                  make(chan struct{}),
+		applyNotifyCh:         make(chan bool, 1),
+		electNotifyCh:         make(chan struct{}, 1),
+		clientCmdIn:           make(chan CommandKV, 1),
+		clientCmdOut:          make(chan ClientResponse, 1),
+		appendEntriesNotifyCh: make(chan struct{}, 1),
+		done:                  make(chan struct{}, 1),
 	}
 }
 
-// No need to reset election timeout.
-// State change triggers run{NewServerState}(),
-// which creates a new timer.
 func (s *Server) convertToFollower(newTerm int32) {
 	s.currentTerm = newTerm
 	s.votedFor = -1
@@ -388,10 +419,7 @@ func (s *Server) rejectRequestVoteMsg() *proto.RequestVoteResponse {
 }
 
 func (s *Server) rejectAppendEntriesMsg() *proto.AppendEntriesResponse {
-	s.mu.RLock()
 	currLogIndex, currLogTerm := s.log.getLastLogIndexTerm()
-	s.mu.RUnlock()
-
 	return &proto.AppendEntriesResponse{
 		Term:          s.currentTerm,
 		Success:       false,
@@ -401,8 +429,8 @@ func (s *Server) rejectAppendEntriesMsg() *proto.AppendEntriesResponse {
 }
 
 func (s *Server) sendAppendEntries(isHeartBeat bool, cmd CommandKV, currentTerm int32, commitIndex int32) {
+	logRaft(Leader, SendAppendEntries, s.config.Id, s.currentTerm)
 	if !isHeartBeat {
-		// TODO lock
 		s.log = append(s.log, &proto.LogEntry{
 			Index:       s.log.size(),
 			Term:        s.currentTerm,
@@ -412,14 +440,14 @@ func (s *Server) sendAppendEntries(isHeartBeat bool, cmd CommandKV, currentTerm 
 	}
 
 	var wg sync.WaitGroup
-	for _, peer := range *s.peers {
+	for _, peer := range *s.Peers {
 		wg.Add(1)
 		go func(p Peer) {
 			defer wg.Done()
 			// retry if we have to
 			for s.sendAppendEntry(isHeartBeat, p, currentTerm, commitIndex) {
 			}
-		}(peer)
+		}(*peer)
 	}
 	wg.Wait()
 }
@@ -438,19 +466,22 @@ func (s *Server) sendAppendEntry(isHeartBeat bool, p Peer, currentTerm int32, co
 	if !isHeartBeat {
 		entries = s.log[nextIndex:]
 	}
+	s.mu.RUnlock()
+
 	in := proto.AppendEntriesRequest{
 		Term:         currentTerm,
 		PrevLogIndex: prevLogIndex,
 		PrevLogTerm:  prevLogTerm,
 		CommitIndex:  commitIndex,
-		LeaderId:     s.config.ID,
+		LeaderId:     s.config.Id,
 		Entries:      entries,
 	}
-	s.mu.RUnlock()
 
 	isReplicated := false
-	if out, err := p.AppendEntries(randAppendEntriesTimeout(), &in); err != nil {
-		// TODO lock
+	if out, err := p.AppendEntries(randAppendEntriesTimeout(), &in); err == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+
 		if out.Term > currentTerm {
 			s.convertToFollower(out.Term)
 			return false
@@ -468,13 +499,14 @@ func (s *Server) sendAppendEntry(isHeartBeat bool, p Peer, currentTerm int32, co
 				for N := commitIndex + 1; N < s.log.size(); N++ {
 					if s.log[N].Term == currentTerm {
 						serverCount := 1
-						for _, peer := range *s.peers {
+						for _, peer := range *s.Peers {
 							if s.matchIndex[peer.id] >= N {
 								serverCount++
 							}
 						}
 
 						if s.isMajorityCount(serverCount) {
+							logRaft(Leader, AdvanceCommitIndex, s.config.Id, s.currentTerm)
 							s.commitIndex = N
 						}
 					}
@@ -504,25 +536,27 @@ func (s *Server) sendAppendEntry(isHeartBeat bool, p Peer, currentTerm int32, co
 			}
 		}
 	}
-	s.applyNotifyCh <- isReplicated
+	if !isHeartBeat {
+		s.applyNotifyCh <- isReplicated
+	}
 	return false
 }
 
 func (s *Server) isMajorityCount(count int) bool {
-	return 2*count > len(*s.peers)+1
+	return 2*count > len(*s.Peers)+1
 }
 
 func (s *Server) PersistToStorage() {
 	err := s.storage.Save(NewPersistentState(s.currentTerm, s.votedFor, s.log))
 	if err != nil {
-		log.Printf("SERVER(WARN): Failed to persist state to storage: %v", err)
+		logError(err.Error())
 	}
 }
 
 func (s *Server) LoadFromStorage() {
 	state, err := s.storage.Load()
 	if err != nil {
-		log.Printf("SERVER(WARN): Failed to load persistant state from storage: %v", err)
+		logError(err.Error())
 	} else {
 		s.currentTerm = state.CurrentTerm
 		s.votedFor = state.VotedFor
@@ -531,9 +565,21 @@ func (s *Server) LoadFromStorage() {
 }
 
 func (s *Server) IsLeader() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.state == Leader
 }
 
 func (s *Server) GetLeaderAddress() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return Cluster[s.currentLeader].Address
+}
+
+func (s *Server) GetAddress() string {
+	return s.config.Address
+}
+
+func (s *Server) GetMyId() int32 {
+	return s.config.Id
 }
