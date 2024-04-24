@@ -27,7 +27,7 @@ type Storage struct {
 
 func NewStorage(serverId int32) *Storage {
 	filePath := fmt.Sprintf("./state#%d.json", serverId)
-	file, err := os.Create(filePath)
+	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatalf("STORAGE(FATAL): Failed to create file: %v", err)
 	}

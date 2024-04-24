@@ -52,12 +52,12 @@ func (p *Peer) RequestVote(timeout time.Duration, in *proto.RequestVoteRequest) 
 	timeoutCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	//select {
-	//case <-timeoutCtx.Done():
-	//	log.Printf("RPC(WARN): RequestVote timed out")
-	//	return nil, fmt.Errorf("RequestVote timed out")
-	//default:
-	//}
+	select {
+	case <-timeoutCtx.Done():
+		log.Printf("RPC(WARN): RequestVote timed out")
+		return nil, fmt.Errorf("RequestVote timed out")
+	default:
+	}
 
 	return p.rpcClient.RequestVote(timeoutCtx, in)
 }

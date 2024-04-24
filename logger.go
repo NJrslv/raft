@@ -19,6 +19,7 @@ const (
 	RejectRequestVote    = "[REJECT REQUEST VOTE]   "
 	ElectionWin          = "[ELECTION WIN]          "
 	AdvanceCommitIndex   = "[ADVANCE COMMIT INDEX]  "
+	SubmitReceived       = "[SUBMITTED RECEIVED]    "
 )
 
 func logRaft(state State, prefix string, currId int32, term int32) {

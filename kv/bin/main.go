@@ -11,15 +11,23 @@ import (
 	"syscall"
 )
 
-func parseID() int32 {
-	var id int
-	flag.IntVar(&id, "id", -1, "Id of the item")
+var (
+	raftServerId int
+	kvAddr       string
+)
+
+func parseCMD() {
+	flag.IntVar(&raftServerId, "id", -1, "Id of the item")
+	flag.StringVar(&kvAddr, "kvaddr", "", "KV address")
 	flag.Parse()
 
-	if id == -1 {
+	if raftServerId == -1 {
 		log.Fatal("missing required flag --id")
 	}
-	return int32(id)
+
+	if kvAddr == "" {
+		log.Fatal("missing required flag --kvaddr")
+	}
 }
 
 func startHTTPServer(kvAddress string) {
@@ -33,21 +41,15 @@ func startHTTPServer(kvAddress string) {
 
 func main() {
 	database := make(map[string]string)
-	id := parseID()
+	parseCMD()
 
-	server := raft.NewServer(id, &database)
+	server := raft.NewServer(int32(raftServerId), &database)
 	kvApi := kv.NewKVapi(server, &database)
 	kvApi.PrintRunInstruction()
 
+	startHTTPServer(kvAddr)
 	http.HandleFunc("/set", kvApi.SetHandler)
 	http.HandleFunc("/get", kvApi.GetHandler)
-
-	kvAddress, ok := raft.FindServerAddressByID(id)
-	if !ok {
-		log.Fatal("incorrect server id")
-	}
-
-	startHTTPServer(kvAddress)
 
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGTERM, syscall.SIGKILL)

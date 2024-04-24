@@ -43,9 +43,10 @@ func (kv *KVapi) GetHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("KVAPI(WARN): error getting value for key '%s'", key)
 		}
 	} else {
-		currentLeader := kv.raftServer.GetLeaderAddress()
-		http.Redirect(w, r, "http://"+currentLeader+"/get?key="+key, http.StatusTemporaryRedirect)
-		log.Printf("KVAPI: redirected GET request for key '%s' to leader at %s\n", key, currentLeader)
+		log.Printf("KVAPI: not a leader")
+		//currentLeader := kv.raftServer.GetLeaderAddress()
+		//http.Redirect(w, r, "http://"+currentLeader+"/get?key="+key, http.StatusTemporaryRedirect)
+		//log.Printf("KVAPI: redirected GET request for key '%s' to leader at %s\n", key, currentLeader)
 	}
 }
 
@@ -71,9 +72,10 @@ func (kv *KVapi) SetHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("KVAPI(WARN): error setting value '%s' for key '%s'", val, key)
 		}
 	} else {
-		currentLeader := kv.raftServer.GetLeaderAddress()
-		http.Redirect(w, r, "http://"+currentLeader+"/get?key="+key, http.StatusTemporaryRedirect)
-		log.Printf("KVAPI: redirected SET request for key '%s' to leader at %s\n", key, currentLeader)
+		log.Printf("KVAPI: not a leader")
+		//currentLeader := kv.raftServer.GetLeaderAddress()
+		//http.Redirect(w, r, "http://"+currentLeader+"/get?key="+key, http.StatusTemporaryRedirect)
+		//log.Printf("KVAPI: redirected SET request for key '%s' to leader at %s\n", key, currentLeader)
 	}
 }
 

@@ -11,12 +11,10 @@ func NewConfig(id int32) *ServerConfig {
 	return &Cluster[id]
 }
 
-const ClusterSize = 3
-
 var Cluster = []ServerConfig{
 	{Id: 0, Address: "localhost:27000"},
 	{Id: 1, Address: "localhost:27001"},
-	{Id: 2, Address: "localhost:10002"},
+	{Id: 2, Address: "localhost:27002"},
 }
 
 func FindServerAddressByID(id int32) (string, bool) {
