@@ -232,7 +232,7 @@ func (s *Server) runCandidate() {
 	votesReceived := 1
 
 	electionTicker := time.NewTicker(randomTimeout(DefaultElectionTimeout))
-	// TODO do timer instead of ticker
+
 	for s.state == Candidate {
 		select {
 		case <-electionTicker.C:
@@ -325,26 +325,19 @@ func (s *Server) runCandidate() {
 	}
 }
 
+// TODO mutex runLeader()
 func (s *Server) runLeader() {
 	s.LoadFromStorage()
 	logRaft(Leader, StateChanged, s.config.Id, s.currentTerm)
 
 	heartbeatTicker := time.NewTicker(randomTimeout(DefaultHeartbeatTimeout))
 
+	stopListenClient, stopSendHeartBeats := make(chan struct{}, 1), make(chan struct{}, 1)
+	go s.listenClient(stopListenClient, heartbeatTicker)
+	go s.sendHeartBeats(stopSendHeartBeats, heartbeatTicker)
+
 	for s.state == Leader {
 		select {
-		case cmd := <-s.clientCmdIn:
-			logRaft(Leader, ReceiveClientCmd, s.config.Id, s.currentTerm)
-
-			heartbeatTicker.Reset(randomTimeout(DefaultHeartbeatTimeout))
-			s.sendAppendEntries(false, cmd, s.currentTerm, s.commitIndex)
-
-		case <-heartbeatTicker.C:
-			logRaft(Leader, HeartbeatTimeout, s.config.Id, s.currentTerm)
-
-			heartbeatTicker.Reset(randomTimeout(DefaultHeartbeatTimeout))
-			s.sendAppendEntries(true, CommandKV{}, s.currentTerm, s.commitIndex)
-
 		case isReplicated := <-s.applyNotifyCh:
 			logRaft(Leader, Apply, s.config.Id, s.currentTerm)
 
@@ -396,6 +389,38 @@ func (s *Server) runLeader() {
 			//  Ignore since we are not the candidate
 
 		case <-s.stopServer:
+			stopListenClient <- struct{}{}
+			stopSendHeartBeats <- struct{}{}
+			return
+		}
+	}
+}
+
+func (s *Server) listenClient(done chan struct{}, heartbeatTicker *time.Ticker) {
+	for {
+		select {
+		case cmd := <-s.clientCmdIn:
+			logRaft(Leader, ReceiveClientCmd, s.config.Id, s.currentTerm)
+
+			heartbeatTicker.Reset(randomTimeout(DefaultHeartbeatTimeout))
+			s.sendAppendEntries(false, cmd, s.currentTerm, s.commitIndex)
+
+		case <-done:
+			return
+		}
+	}
+}
+
+func (s *Server) sendHeartBeats(done chan struct{}, heartbeatTicker *time.Ticker) {
+	for {
+		select {
+		case <-heartbeatTicker.C:
+			logRaft(Leader, HeartbeatTimeout, s.config.Id, s.currentTerm)
+
+			heartbeatTicker.Reset(randomTimeout(DefaultHeartbeatTimeout))
+			s.sendAppendEntries(true, CommandKV{}, s.currentTerm, s.commitIndex)
+
+		case <-done:
 			return
 		}
 	}
@@ -441,6 +466,8 @@ func NewServer(id int32, db *map[string]string) *Server {
 		clientCmdOut:  make(chan ClientResponse, 1),
 		done:          make(chan struct{}, 1),
 	}
+
+	// if storage is empty => it is first load of the server => term = -1
 	if _, err := s.storage.Load(); err != nil {
 		s.convertToFollower(-1)
 	}
@@ -478,6 +505,7 @@ func (s *Server) rejectAppendEntriesMsg() *proto.AppendEntriesResponse {
 }
 
 func (s *Server) sendAppendEntries(isHeartBeat bool, cmd CommandKV, currentTerm int32, commitIndex int32) {
+	s.mu.RLock()
 	logRaft(Leader, SendAppendEntries, s.config.Id, s.currentTerm)
 	if !isHeartBeat {
 		s.log = append(s.log, &proto.LogEntry{
@@ -487,6 +515,9 @@ func (s *Server) sendAppendEntries(isHeartBeat bool, cmd CommandKV, currentTerm 
 		})
 		s.PersistToStorage()
 	}
+	s.mu.RUnlock()
+
+	isReplicated := false
 
 	var wg sync.WaitGroup
 	for _, peer := range *s.Peers {
@@ -494,15 +525,25 @@ func (s *Server) sendAppendEntries(isHeartBeat bool, cmd CommandKV, currentTerm 
 		go func(p Peer) {
 			defer wg.Done()
 			// retry if we have to
-			for s.sendAppendEntry(isHeartBeat, p, currentTerm, commitIndex) {
+			for s.sendAppendEntry(isHeartBeat, p, currentTerm, commitIndex, &isReplicated) {
 			}
 		}(*peer)
 	}
 	wg.Wait()
+
+	if !isHeartBeat {
+		s.applyNotifyCh <- isReplicated
+	}
 }
 
 // sendAppendEntry returns true if we need to retry
-func (s *Server) sendAppendEntry(isHeartBeat bool, p Peer, currentTerm int32, commitIndex int32) bool {
+func (s *Server) sendAppendEntry(
+	isHeartBeat bool,
+	p Peer,
+	currentTerm int32,
+	commitIndex int32,
+	isReplicated *bool,
+) bool {
 	s.mu.RLock()
 	nextIndex := s.nextIndex[p.id]
 	prevLogIndex := nextIndex - 1
@@ -526,8 +567,6 @@ func (s *Server) sendAppendEntry(isHeartBeat bool, p Peer, currentTerm int32, co
 		Entries:      entries,
 	}
 
-	isReplicated := false
-	debug(532)
 	if out, err := p.AppendEntries(DefaultAppendEntriesTimeout, &in); err == nil {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -563,7 +602,7 @@ func (s *Server) sendAppendEntry(isHeartBeat bool, p Peer, currentTerm int32, co
 				}
 
 				if s.commitIndex != commitIndex {
-					isReplicated = true
+					*isReplicated = true
 				}
 			} else {
 				s.nextIndex[p.id] = out.ConflictIndex
@@ -585,9 +624,6 @@ func (s *Server) sendAppendEntry(isHeartBeat bool, p Peer, currentTerm int32, co
 				return true
 			}
 		}
-	}
-	if !isHeartBeat {
-		s.applyNotifyCh <- isReplicated
 	}
 	return false
 }

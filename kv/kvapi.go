@@ -32,12 +32,13 @@ func (kv *KVapi) GetHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if kv.raftServer.IsLeader() {
-		command := raft.CommandKV{Op: raft.Set, Key: key, Value: ""}
+		command := raft.CommandKV{Op: raft.Get, Key: key, Value: ""}
 		response := kv.raftServer.Submit(command)
 		if response.Ok {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(response.Msg))
-			log.Printf("KVAPI: got value for key '%s'", key)
+			w.Write([]byte("abcdefgh"))
+			//w.Write([]byte(response.Msg))
+			log.Printf("KVAPI: got value for key '%s': %s", key, response.Msg)
 		} else {
 			w.WriteHeader(http.StatusInternalServerError)
 			log.Printf("KVAPI(WARN): error getting value for key '%s'", key)

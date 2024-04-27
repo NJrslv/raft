@@ -6,11 +6,11 @@ import (
 	"strings"
 )
 
-type Op int
+type Op string
 
 const (
-	Get Op = iota
-	Set
+	Get Op = "GET"
+	Set Op = "SET"
 )
 
 type CommandKV struct {
@@ -40,6 +40,7 @@ func (fsm *StateMachineKV) Apply(cmd *CommandKV) Response {
 func stringToCommandKV(input string) *CommandKV {
 	parts := strings.Split(input, "-")
 	if len(parts) != 3 {
+		log.Printf("invalid command: %d", len(parts))
 		log.Fatalf("STATEMACHINE(FATAL): Invalid format: %s, expected {GET/SET}-{KEY}-{VALUE/}", input)
 	}
 

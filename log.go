@@ -22,7 +22,7 @@ func (l *Log) getLastLogIndexTerm() (int32, int32) {
 func (l *Log) isLogUpToDateWith(lastLogIndex int32, lastLogTerm int32) bool {
 	isUpToDate := true
 	if l.size() > 0 {
-		currLastLogIndex, currLastLogTerm := (*l)[l.size()-1].Term, (*l)[l.size()-1].Index
+		currLastLogIndex, currLastLogTerm := (*l)[l.size()-1].Index, (*l)[l.size()-1].Term
 		isUpToDate = lastLogTerm > currLastLogTerm ||
 			lastLogTerm == currLastLogTerm && lastLogIndex >= currLastLogIndex
 	}
