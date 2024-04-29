@@ -31,24 +31,22 @@ func (kv *KVapi) GetHandler(w http.ResponseWriter, r *http.Request) {
 		log.Fatal("KVAPI(FATAL): missing key param in GET request")
 	}
 
-	if kv.raftServer.IsLeader() {
-		command := raft.CommandKV{Op: raft.Get, Key: key, Value: ""}
-		response := kv.raftServer.Submit(command)
-		if response.Ok {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("abcdefgh"))
-			//w.Write([]byte(response.Msg))
-			log.Printf("KVAPI: got value for key '%s': %s", key, response.Msg)
-		} else {
-			w.WriteHeader(http.StatusInternalServerError)
-			log.Printf("KVAPI(WARN): error getting value for key '%s'", key)
-		}
+	command := raft.CommandKV{Op: raft.Get, Key: key, Value: ""}
+	response := kv.raftServer.Submit(command)
+	if response.Ok {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("get value: " + response.Msg))
+		log.Printf("KVAPI: got value for key '%s': %s", key, response.Msg)
 	} else {
-		log.Printf("KVAPI: not a leader")
-		//currentLeader := kv.raftServer.GetLeaderAddress()
-		//http.Redirect(w, r, "http://"+currentLeader+"/get?key="+key, http.StatusTemporaryRedirect)
-		//log.Printf("KVAPI: redirected GET request for key '%s' to leader at %s\n", key, currentLeader)
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("not a leader or error"))
+		log.Printf("KVAPI(WARN): error getting value for key '%s'", key)
 	}
+
+	// Redirect:
+	//currentLeader := kv.raftServer.GetLeaderAddress()
+	//http.Redirect(w, r, "http://"+currentLeader+"/get?key="+key, http.StatusTemporaryRedirect)
+	//log.Printf("KVAPI: redirected GET request for key '%s' to leader at %s\n", key, currentLeader)
 }
 
 func (kv *KVapi) SetHandler(w http.ResponseWriter, r *http.Request) {
@@ -62,22 +60,22 @@ func (kv *KVapi) SetHandler(w http.ResponseWriter, r *http.Request) {
 		log.Fatal("KVAPI(FATAL): missing key or val param in SET request")
 	}
 
-	if kv.raftServer.IsLeader() {
-		command := raft.CommandKV{Op: raft.Set, Key: key, Value: val}
-		response := kv.raftServer.Submit(command)
-		if response.Ok {
-			w.WriteHeader(http.StatusOK)
-			log.Printf("KVAPI: set value for key '%s' value '%s", key, val)
-		} else {
-			w.WriteHeader(http.StatusInternalServerError)
-			log.Printf("KVAPI(WARN): error setting value '%s' for key '%s'", val, key)
-		}
+	command := raft.CommandKV{Op: raft.Set, Key: key, Value: val}
+	response := kv.raftServer.Submit(command)
+	if response.Ok {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("set value"))
+		log.Printf("KVAPI: set value for key '%s' value '%s", key, val)
 	} else {
-		log.Printf("KVAPI: not a leader")
-		//currentLeader := kv.raftServer.GetLeaderAddress()
-		//http.Redirect(w, r, "http://"+currentLeader+"/get?key="+key, http.StatusTemporaryRedirect)
-		//log.Printf("KVAPI: redirected SET request for key '%s' to leader at %s\n", key, currentLeader)
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("not a leader or error"))
+		log.Printf("KVAPI(WARN): error setting value '%s' for key '%s'", val, key)
 	}
+
+	// Redirect
+	//currentLeader := kv.raftServer.GetLeaderAddress()
+	//http.Redirect(w, r, "http://"+currentLeader+"/get?key="+key, http.StatusTemporaryRedirect)
+	//log.Printf("KVAPI: redirected SET request for key '%s' to leader at %s\n", key, currentLeader)
 }
 
 func (kv *KVapi) PrintRunInstruction() {

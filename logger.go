@@ -22,8 +22,8 @@ const (
 	SubmitReceived       = "[SUBMITTED RECEIVED]    "
 )
 
-func logRaft(state State, prefix string, currId int32, term int32) {
-	log.Printf("%s %s#%d in term %d\n", prefix, stateToStr(state), currId, term)
+func logRaft(prefix string, debugInfo string) {
+	log.Printf("%s %s\n", prefix, debugInfo)
 }
 
 func logInfo(msg string) {

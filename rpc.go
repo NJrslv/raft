@@ -104,25 +104,26 @@ func (s *RPCserver) start(addr string) {
 	}
 	defer l.Close()
 
-	s.server = grpc.NewServer()
-	proto.RegisterRaftServer(s.server, s)
-
 	if err := s.server.Serve(l); err != nil {
 		log.Fatalf("RPC(FATAL): Failed to serve: %s", err.Error())
 	}
 }
 
 func (s *RPCserver) stop() {
-	s.server.GracefulStop()
+	s.server.Stop()
 }
 
 func NewRPCserver(bufferCapacity int) *RPCserver {
-	return &RPCserver{
+	s := &RPCserver{
 		AppendEntriesInCh:  make(chan *proto.AppendEntriesRequest, bufferCapacity),
 		AppendEntriesOutCh: make(chan *proto.AppendEntriesResponse, bufferCapacity),
 		RequestVoteInCh:    make(chan *proto.RequestVoteRequest, bufferCapacity),
 		RequestVoteOutCh:   make(chan *proto.RequestVoteResponse, bufferCapacity),
 	}
+
+	s.server = grpc.NewServer()
+	proto.RegisterRaftServer(s.server, s)
+	return s
 }
 
 func (s *RPCserver) AppendEntries(_ context.Context, in *proto.AppendEntriesRequest) (*proto.AppendEntriesResponse, error) {

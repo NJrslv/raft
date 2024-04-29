@@ -42,7 +42,6 @@ func startHTTPServer(kvAddress string) {
 func main() {
 	database := make(map[string]string)
 	parseCMD()
-
 	server := raft.NewServer(int32(raftServerId), &database)
 	kvApi := kv.NewKVapi(server, &database)
 	kvApi.PrintRunInstruction()

@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"log"
 	"raft/proto"
 	"sync"
@@ -64,7 +65,6 @@ type ClientResponse struct {
 func (s *Server) Start() {
 	logInfo("Starting server")
 
-	s.LoadFromStorage()
 	go s.rpc.start(s.GetAddress())
 	s.Peers.DialPeers()
 	go s.run()
@@ -73,8 +73,8 @@ func (s *Server) Start() {
 func (s *Server) Stop() {
 	logInfo("Stopping server")
 
-	s.rpc.stop()
 	s.Peers.CloseConn()
+	s.rpc.stop()
 	s.done <- struct{}{}
 }
 
@@ -88,7 +88,7 @@ func (s *Server) run() {
 		default:
 		}
 
-		switch s.state {
+		switch s.GetState() {
 		case Follower:
 			s.runFollower()
 		case Candidate:
@@ -100,52 +100,64 @@ func (s *Server) run() {
 }
 
 func (s *Server) runFollower() {
-	s.LoadFromStorage()
-	logRaft(Follower, StateChanged, s.config.Id, s.currentTerm)
+	logRaft(StateChanged, s.GetDebugInfoLock())
 
 	electionTicker := time.NewTicker(randomTimeout(DefaultElectionTimeout))
 	defer electionTicker.Stop()
 
-	for s.state == Follower {
+	for s.GetState() == Follower {
+		s.mu.RLock()
+		currentTerm := s.currentTerm
+		votedFor := s.votedFor
+		s.mu.RUnlock()
+
 		select {
 		case <-electionTicker.C:
-			logRaft(Follower, ElectionTimeout, s.config.Id, s.currentTerm)
+			logRaft(ElectionTimeout, s.GetDebugInfoLock())
 
+			s.mu.Lock()
 			s.state = Candidate
+			s.mu.Unlock()
+
 			s.electNotifyCh <- struct{}{}
+			return
 
 		case <-s.applyNotifyCh:
-			logRaft(Follower, Apply, s.config.Id, s.currentTerm)
+			logRaft(Apply, s.GetDebugInfoLock())
 			s.applyCommitted()
 
 		case in := <-s.rpc.RequestVoteInCh:
-			logRaft(Follower, ReceiveRequestVote, s.config.Id, s.currentTerm)
+			logRaft(ReceiveRequestVote, s.GetDebugInfoLock())
 
 			out := proto.RequestVoteResponse{VoteGranted: false}
 			// Reply false if term < currentTerm AND
 			// If votedFor is null or candidateId, and candidate’s log
 			// is at least as up-to-date as receiver’s log, grant vote.
-			if s.currentTerm <= in.Term && s.votedFor == -1 && in.CandidateId != -1 {
+			if currentTerm <= in.Term && votedFor == -1 && in.CandidateId != -1 {
+				s.mu.Lock()
+
 				s.currentTerm = in.Term
 				if s.log.isLogUpToDateWith(in.LastLogIndex, in.LastLogTerm) {
 					out.VoteGranted = true
 					s.votedFor = in.CandidateId
 					electionTicker.Reset(randomTimeout(DefaultElectionTimeout))
 				}
+
+				s.mu.Unlock()
 				s.PersistToStorage()
 			}
 
-			out.Term = s.currentTerm
+			out.Term = currentTerm
 			s.rpc.RequestVoteOutCh <- &out
 
 		case in := <-s.rpc.AppendEntriesInCh:
-			logRaft(Follower, ReceiveAppendEntries, s.config.Id, s.currentTerm)
+			logRaft(ReceiveAppendEntries, s.GetDebugInfoLock())
 
 			var out proto.AppendEntriesResponse
 
 			// Reply false if term < currentTerm.
-			if in.Term < s.currentTerm {
-				out.Term = s.currentTerm
+			if in.Term < currentTerm {
+				out.Term = currentTerm
 				out.Success = false
 				return
 			}
@@ -153,6 +165,7 @@ func (s *Server) runFollower() {
 			// Reply false if log does not contain an entry at prevLogIndex
 			// whose term matches prevLogTerm. Also help the leader bring us
 			// up to date quickly (By skipping the indexes in the same term).
+			s.mu.Lock()
 			if !s.log.isPrevLogTermTheSame(in.PrevLogIndex, in.PrevLogTerm) {
 				if in.PrevLogIndex >= s.log.size() {
 					out.ConflictIndex = s.log.size()
@@ -203,9 +216,10 @@ func (s *Server) runFollower() {
 				s.applyNotifyCh <- false // false ~ cmd is not replicated (we don't know)
 			}
 
+			s.mu.Unlock()
 			s.PersistToStorage()
 
-			out.Term = s.currentTerm
+			out.Term = currentTerm
 			out.Success = true
 			s.rpc.AppendEntriesOutCh <- &out
 
@@ -223,53 +237,58 @@ func debug(line int) {
 }
 
 func (s *Server) runCandidate() {
-	s.LoadFromStorage()
-	s.currentTerm++
-
-	logRaft(Candidate, StateChanged, s.config.Id, s.currentTerm)
-
+	s.mu.Lock()
 	s.votedFor = s.config.Id
+	s.currentTerm++
+	s.mu.Unlock()
+
 	votesReceived := 1
+
+	logRaft(StateChanged, s.GetDebugInfoLock())
 
 	electionTicker := time.NewTicker(randomTimeout(DefaultElectionTimeout))
 
-	for s.state == Candidate {
+	for s.GetState() == Candidate {
+		currentTerm := s.GetTerm()
+
 		select {
 		case <-electionTicker.C:
-			logRaft(Candidate, ElectionTimeout, s.config.Id, s.currentTerm)
+			logRaft(ElectionTimeout, s.GetDebugInfoLock())
 
 			s.electNotifyCh <- struct{}{}
 
 		case in := <-s.rpc.AppendEntriesInCh:
-			logRaft(Candidate, ReceiveAppendEntries, s.config.Id, s.currentTerm)
+			logRaft(ReceiveAppendEntries, s.GetDebugInfoLock())
 
-			if in.Term >= s.currentTerm {
+			if in.Term >= currentTerm {
+				s.mu.Lock()
 				s.convertToFollower(in.Term)
+				s.mu.Unlock()
 				// push to the follower
 				s.rpc.AppendEntriesInCh <- in
 				return
 			}
 
-			logRaft(Candidate, RejectAppendEntries, s.config.Id, s.currentTerm)
+			logRaft(RejectAppendEntries, s.GetDebugInfoLock())
 			s.rpc.AppendEntriesOutCh <- s.rejectAppendEntriesMsg()
 
 		case in := <-s.rpc.RequestVoteInCh:
-			logRaft(Candidate, ReceiveRequestVote, s.config.Id, s.currentTerm)
+			logRaft(ReceiveRequestVote, s.GetDebugInfoLock())
 
-			if in.Term > s.currentTerm {
+			if in.Term > currentTerm {
+				s.mu.Lock()
 				s.convertToFollower(in.Term)
+				s.mu.Unlock()
 				// push to the follower
 				s.rpc.RequestVoteInCh <- in
 				return
 			}
 
-			logRaft(Candidate, RejectRequestVote, s.config.Id, s.currentTerm)
+			logRaft(RejectRequestVote, s.GetDebugInfoLock())
 			s.rpc.RequestVoteOutCh <- s.rejectRequestVoteMsg()
 
 		case <-s.electNotifyCh:
-			logRaft(Candidate, SendRequestVote, s.config.Id, s.currentTerm)
-
-			win := false
+			logRaft(SendRequestVote, s.GetDebugInfoLock())
 
 			var wg sync.WaitGroup
 			for _, peer := range *s.Peers {
@@ -278,8 +297,6 @@ func (s *Server) runCandidate() {
 					defer wg.Done()
 					s.mu.RLock()
 					lastLogIndex, lastLogTerm := s.log.getLastLogIndexTerm()
-					currentTerm := s.currentTerm
-					s.mu.RUnlock()
 
 					in := proto.RequestVoteRequest{
 						Term:         currentTerm,
@@ -287,6 +304,7 @@ func (s *Server) runCandidate() {
 						LastLogTerm:  lastLogTerm,
 						CandidateId:  s.config.Id,
 					}
+					s.mu.RUnlock()
 
 					if out, err := p.RequestVote(DefaultRequestVoteTimeout, &in); err == nil {
 						s.mu.Lock()
@@ -300,8 +318,9 @@ func (s *Server) runCandidate() {
 						if out.VoteGranted {
 							votesReceived++
 							if s.isMajorityCount(votesReceived) {
-								logRaft(Candidate, ElectionWin, s.config.Id, s.currentTerm)
-								win = true
+								logRaft(ElectionWin, s.GetDebugInfoLockFree())
+								s.state = Leader
+								return
 							}
 						}
 					}
@@ -309,14 +328,10 @@ func (s *Server) runCandidate() {
 			}
 			wg.Wait()
 			s.PersistToStorage()
-
-			if win {
-				s.state = Leader
-			}
 			return
 
 		case <-s.applyNotifyCh:
-			logRaft(Candidate, Apply, s.config.Id, s.currentTerm)
+			logRaft(Apply, s.GetDebugInfoLock())
 			s.applyCommitted()
 
 		case <-s.stopServer:
@@ -325,10 +340,8 @@ func (s *Server) runCandidate() {
 	}
 }
 
-// TODO mutex runLeader()
 func (s *Server) runLeader() {
-	s.LoadFromStorage()
-	logRaft(Leader, StateChanged, s.config.Id, s.currentTerm)
+	logRaft(StateChanged, s.GetDebugInfoLock())
 
 	heartbeatTicker := time.NewTicker(randomTimeout(DefaultHeartbeatTimeout))
 
@@ -336,10 +349,12 @@ func (s *Server) runLeader() {
 	go s.listenClient(stopListenClient, heartbeatTicker)
 	go s.sendHeartBeats(stopSendHeartBeats, heartbeatTicker)
 
-	for s.state == Leader {
+	for s.GetState() == Leader {
+		currentTerm := s.GetTerm()
+
 		select {
 		case isReplicated := <-s.applyNotifyCh:
-			logRaft(Leader, Apply, s.config.Id, s.currentTerm)
+			logRaft(Apply, s.GetDebugInfoLock())
 
 			if isReplicated {
 				applyResults := s.applyCommitted()
@@ -356,33 +371,37 @@ func (s *Server) runLeader() {
 			}
 
 		case in := <-s.rpc.RequestVoteInCh:
-			logRaft(Leader, ReceiveRequestVote, s.config.Id, s.currentTerm)
+			logRaft(ReceiveRequestVote, s.GetDebugInfoLock())
 
-			if in.Term > s.currentTerm {
+			if in.Term > currentTerm {
+				s.mu.Lock()
 				s.convertToFollower(in.Term)
+				s.mu.Unlock()
 				// push to the follower
 				s.rpc.RequestVoteInCh <- in
 				return
 			}
 
-			logRaft(Leader, RejectRequestVote, s.config.Id, s.currentTerm)
+			logRaft(RejectRequestVote, s.GetDebugInfoLock())
 			s.rpc.RequestVoteOutCh <- s.rejectRequestVoteMsg()
 
 		case in := <-s.rpc.AppendEntriesInCh:
-			logRaft(Leader, ReceiveAppendEntries, s.config.Id, s.currentTerm)
+			logRaft(ReceiveAppendEntries, s.GetDebugInfoLock())
 
-			if in.Term == s.currentTerm {
+			if in.Term == currentTerm {
 				logError("2 leaders in the same term")
 			}
 
-			if in.Term > s.currentTerm {
+			if in.Term > currentTerm {
+				s.mu.Lock()
 				s.convertToFollower(in.Term)
+				s.mu.Unlock()
 				// push to the follower
 				s.rpc.AppendEntriesInCh <- in
 				return
 			}
 
-			logRaft(Leader, RejectAppendEntries, s.config.Id, s.currentTerm)
+			logRaft(RejectAppendEntries, s.GetDebugInfoLock())
 			s.rpc.AppendEntriesOutCh <- s.rejectAppendEntriesMsg()
 
 		case <-s.electNotifyCh:
@@ -400,10 +419,15 @@ func (s *Server) listenClient(done chan struct{}, heartbeatTicker *time.Ticker) 
 	for {
 		select {
 		case cmd := <-s.clientCmdIn:
-			logRaft(Leader, ReceiveClientCmd, s.config.Id, s.currentTerm)
+			logRaft(ReceiveClientCmd, s.GetDebugInfoLock())
 
 			heartbeatTicker.Reset(randomTimeout(DefaultHeartbeatTimeout))
-			s.sendAppendEntries(false, cmd, s.currentTerm, s.commitIndex)
+
+			s.mu.RLock()
+			currentTerm := s.currentTerm
+			commitIndex := s.commitIndex
+			s.mu.RUnlock()
+			s.sendAppendEntries(false, cmd, currentTerm, commitIndex)
 
 		case <-done:
 			return
@@ -415,10 +439,15 @@ func (s *Server) sendHeartBeats(done chan struct{}, heartbeatTicker *time.Ticker
 	for {
 		select {
 		case <-heartbeatTicker.C:
-			logRaft(Leader, HeartbeatTimeout, s.config.Id, s.currentTerm)
+			logRaft(HeartbeatTimeout, s.GetDebugInfoLock())
 
 			heartbeatTicker.Reset(randomTimeout(DefaultHeartbeatTimeout))
-			s.sendAppendEntries(true, CommandKV{}, s.currentTerm, s.commitIndex)
+
+			s.mu.RLock()
+			currentTerm := s.currentTerm
+			commitIndex := s.commitIndex
+			s.mu.RUnlock()
+			s.sendAppendEntries(true, CommandKV{}, currentTerm, commitIndex)
 
 		case <-done:
 			return
@@ -430,9 +459,9 @@ type Response string
 
 // Submit attempts to execute a command and replicate it.
 func (s *Server) Submit(command CommandKV) ClientResponse {
-	logRaft(s.state, SubmitReceived, s.config.Id, s.currentTerm)
+	logRaft(SubmitReceived, s.GetDebugInfoLock())
 
-	if s.state == Leader {
+	if s.isLeader() {
 		s.clientCmdIn <- command
 		return <-s.clientCmdOut
 	}
@@ -468,9 +497,14 @@ func NewServer(id int32, db *map[string]string) *Server {
 	}
 
 	// if storage is empty => it is first load of the server => term = -1
-	if _, err := s.storage.Load(); err != nil {
+	if state, err := s.storage.Load(); err != nil {
 		s.convertToFollower(-1)
+	} else {
+		s.currentTerm = state.CurrentTerm
+		s.votedFor = state.VotedFor
+		s.log = state.Log
 	}
+
 	return s
 }
 
@@ -478,10 +512,12 @@ func (s *Server) convertToFollower(newTerm int32) {
 	s.currentTerm = newTerm
 	s.votedFor = -1
 	s.state = Follower
-	s.PersistToStorage()
 }
 
 func (s *Server) applyCommitted() []Response {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	var responses []Response // we can allocate [] of size commitIndex - lastApplied
 	for i := s.lastApplied + 1; i <= s.commitIndex; i++ {
 		responses = append(responses, s.fsm.Apply(stringToCommandKV(s.log[i].CommandName)))
@@ -491,10 +527,14 @@ func (s *Server) applyCommitted() []Response {
 }
 
 func (s *Server) rejectRequestVoteMsg() *proto.RequestVoteResponse {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return &proto.RequestVoteResponse{Term: s.currentTerm, VoteGranted: false}
 }
 
 func (s *Server) rejectAppendEntriesMsg() *proto.AppendEntriesResponse {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	currLogIndex, currLogTerm := s.log.getLastLogIndexTerm()
 	return &proto.AppendEntriesResponse{
 		Term:          s.currentTerm,
@@ -505,17 +545,18 @@ func (s *Server) rejectAppendEntriesMsg() *proto.AppendEntriesResponse {
 }
 
 func (s *Server) sendAppendEntries(isHeartBeat bool, cmd CommandKV, currentTerm int32, commitIndex int32) {
-	s.mu.RLock()
-	logRaft(Leader, SendAppendEntries, s.config.Id, s.currentTerm)
+	logRaft(SendAppendEntries, s.GetDebugInfoLockFree())
 	if !isHeartBeat {
+		s.mu.Lock()
 		s.log = append(s.log, &proto.LogEntry{
 			Index:       s.log.size(),
 			Term:        s.currentTerm,
 			CommandName: commandKVToString(&cmd),
 		})
-		s.PersistToStorage()
+		s.mu.Unlock()
 	}
-	s.mu.RUnlock()
+
+	s.PersistToStorage()
 
 	isReplicated := false
 
@@ -556,7 +597,6 @@ func (s *Server) sendAppendEntry(
 	if !isHeartBeat {
 		entries = s.log[nextIndex:]
 	}
-	s.mu.RUnlock()
 
 	in := proto.AppendEntriesRequest{
 		Term:         currentTerm,
@@ -566,6 +606,7 @@ func (s *Server) sendAppendEntry(
 		LeaderId:     s.config.Id,
 		Entries:      entries,
 	}
+	s.mu.RUnlock()
 
 	if out, err := p.AppendEntries(DefaultAppendEntriesTimeout, &in); err == nil {
 		s.mu.Lock()
@@ -595,7 +636,7 @@ func (s *Server) sendAppendEntry(
 						}
 
 						if s.isMajorityCount(serverCount) {
-							logRaft(Leader, AdvanceCommitIndex, s.config.Id, s.currentTerm)
+							logRaft(AdvanceCommitIndex, s.GetDebugInfoLockFree())
 							s.commitIndex = N
 						}
 					}
@@ -633,6 +674,9 @@ func (s *Server) isMajorityCount(count int) bool {
 }
 
 func (s *Server) PersistToStorage() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	err := s.storage.Save(NewPersistentState(s.currentTerm, s.votedFor, s.log))
 	if err != nil {
 		logError(err.Error())
@@ -640,6 +684,9 @@ func (s *Server) PersistToStorage() {
 }
 
 func (s *Server) LoadFromStorage() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	state, err := s.storage.Load()
 	if err != nil {
 		logError(err.Error())
@@ -650,16 +697,34 @@ func (s *Server) LoadFromStorage() {
 	}
 }
 
-func (s *Server) IsLeader() bool {
+func (s *Server) isLeader() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.state == Leader
+}
+
+func (s *Server) GetState() State {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state
+}
+
+func (s *Server) GetTerm() int32 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.currentTerm
 }
 
 func (s *Server) GetAddress() string {
 	return s.config.Address
 }
 
-func (s *Server) GetMyId() int32 {
-	return s.config.Id
+func (s *Server) GetDebugInfoLock() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return fmt.Sprintf("Id: %d, State: %s, Term: %v, CommitedIndex: %v ", s.config.Id, stateToStr(s.state), s.currentTerm, s.commitIndex)
+}
+
+func (s *Server) GetDebugInfoLockFree() string {
+	return fmt.Sprintf("Id: %d, State: %s, Term: %v, CommitedIndex: %v ", s.config.Id, stateToStr(s.state), s.currentTerm, s.commitIndex)
 }
