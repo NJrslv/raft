@@ -24,7 +24,7 @@ This repository contains an educational implementation of the [Raft Consensus Al
 go run main.go --id {node server id} --kvaddr {key-value server address}
 ```
 
-- Example, running all the nodes listed in the configuration file config.go
+- Example, running all the nodes listed in the configuration file `config.go`:
 
   
 `Process#0`
