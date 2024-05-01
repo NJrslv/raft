@@ -6,12 +6,12 @@ import (
 )
 
 const (
-	slowCoff = 10
+	slowCoeff = 10
 
-	DefaultHeartbeatTimeout     = slowCoff * 5 * time.Millisecond
-	DefaultElectionTimeout      = slowCoff * 150 * time.Millisecond
-	DefaultRequestVoteTimeout   = slowCoff * 40 * time.Millisecond
-	DefaultAppendEntriesTimeout = slowCoff * 30 * time.Millisecond
+	DefaultHeartbeatTimeout     = slowCoeff * 5 * time.Millisecond
+	DefaultElectionTimeout      = slowCoeff * 150 * time.Millisecond
+	DefaultRequestVoteTimeout   = slowCoeff * 40 * time.Millisecond
+	DefaultAppendEntriesTimeout = slowCoeff * 30 * time.Millisecond
 )
 
 func randomTimeout(minVal time.Duration) time.Duration {

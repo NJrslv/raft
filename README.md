@@ -63,7 +63,7 @@ var Cluster = []ServerConfig{
 - `time.go` - all raft time constants multiplied by slow coefficient in the following way:
 ```go
 const (  
-    slowCoff = 10  
+    slowCoeff = 10  
     DefaultElectionTimeout = slowCoff * 150 * time.Millisecond  
     ...
 )

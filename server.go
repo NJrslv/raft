@@ -2,7 +2,6 @@ package raft
 
 import (
 	"fmt"
-	"log"
 	"raft/proto"
 	"sync"
 	"time"
@@ -230,10 +229,6 @@ func (s *Server) runFollower() {
 			return
 		}
 	}
-}
-
-func debug(line int) {
-	log.Printf("\n----------- HERE ----------- %d\n", line)
 }
 
 func (s *Server) runCandidate() {
@@ -545,7 +540,7 @@ func (s *Server) rejectAppendEntriesMsg() *proto.AppendEntriesResponse {
 }
 
 func (s *Server) sendAppendEntries(isHeartBeat bool, cmd CommandKV, currentTerm int32, commitIndex int32) {
-	logRaft(SendAppendEntries, s.GetDebugInfoLockFree())
+	logRaft(SendAppendEntries, s.GetDebugInfoLock())
 	if !isHeartBeat {
 		s.mu.Lock()
 		s.log = append(s.log, &proto.LogEntry{
