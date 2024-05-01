@@ -64,7 +64,7 @@ var Cluster = []ServerConfig{
 ```go
 const (  
     slowCoeff = 10  
-    DefaultElectionTimeout = slowCoff * 150 * time.Millisecond  
+    DefaultElectionTimeout = slowCoeff * 150 * time.Millisecond  
     ...
 )
 ```
