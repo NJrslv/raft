@@ -29,15 +29,15 @@ go run main.go --id {node server id} --kvaddr {key-value server address}
   
 `Process#0`
 ```bash
-go run -race main.go --id 0 --kvaddr localhost:27004
+go run main.go --id 0 --kvaddr localhost:27004
 ```
 `Process#1`
 ```bash
-go run -race main.go --id 1 --kvaddr localhost:27005
+go run main.go --id 1 --kvaddr localhost:27005
 ```
 `Process#2`
 ```bash
-go run -race main.go --id 2 --kvaddr localhost:27006
+go run main.go --id 2 --kvaddr localhost:27006
 ```
 `Client`
 ```bash
