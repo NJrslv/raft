@@ -21,7 +21,7 @@ This repository contains an educational implementation of the [Raft Consensus Al
 ## Run
 - Format:
 ```bash
-go run main.go --id {node server id} --kvaddr {key-value server address}
+go run kv/bin/main.go --id {node server id} --kvaddr {key-value server address}
 ```
 
 - Example, running all the nodes listed in the configuration file `config.go`:
@@ -29,15 +29,15 @@ go run main.go --id {node server id} --kvaddr {key-value server address}
   
 `Process#0`
 ```bash
-go run main.go --id 0 --kvaddr localhost:27004
+go run kv/bin/main.go --id 0 --kvaddr localhost:27004
 ```
 `Process#1`
 ```bash
-go run main.go --id 1 --kvaddr localhost:27005
+go run kv/bin/main.go --id 1 --kvaddr localhost:27005
 ```
 `Process#2`
 ```bash
-go run main.go --id 2 --kvaddr localhost:27006
+go run kv/bin/main.go --id 2 --kvaddr localhost:27006
 ```
 `Client`
 ```bash
