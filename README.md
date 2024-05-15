@@ -15,7 +15,7 @@ This repository contains an educational implementation of the [Raft Consensus Al
 | Log Replication    | Yes         |
 | Leader Election    | Yes         |
 | Persistence        | Yes         |
-| Membership Changes | Yes         |
+| Membership Changes | No          |
 | Log Compaction     | No          |
 
 ## Run
